@@ -1,9 +1,9 @@
-# BizPilot AI FAQ
+# BizPilot AI FAQ / BizPilot AI Sık Sorulan Sorular
 
 Document type: FAQ
 Source ID: faq_001
 
-## Frequently Asked Questions
+## English
 
 ### What is BizPilot AI?
 
@@ -32,3 +32,33 @@ The competitor-intelligence module uses a public web retrieval API such as Tavil
 ### How will the system be evaluated?
 
 The RAG pipeline will be evaluated using RAGAS metrics: faithfulness, context precision, and answer relevancy.
+
+## Türkçe
+
+### BizPilot AI nedir?
+
+BizPilot AI, dijital iş geliştirme için agentic RAG destekli bir chatbottur. Şirket dokümanı sorularını cevaplamaya, lead'leri puanlamaya, outreach taslakları üretmeye ve rakip bilgilerini özetlemeye yardımcı olur.
+
+### BizPilot AI hangi dokümanları kullanabilir?
+
+RAG pipeline; ürün dokümanları, fiyatlandırma dokümanları, geçmiş proposal dosyaları, FAQ ve güvenli şekilde yüklenebilecek diğer business-development dokümanlarını kullanabilir.
+
+### Chatbot kaynak gösterir mi?
+
+Evet. RAG Q&A modülü, her cevabı üretirken kullanılan kaynak dokümanları göstermelidir.
+
+### Lead qualification nasıl çalışır?
+
+Lead-qualification modülü, public Kaggle lead-scoring dataset üzerinde eğitilmiş bir machine learning modelini basit business rules ile birleştirir. LLM daha sonra skoru doğal dilde açıklar.
+
+### Hangi outreach mesajlarını üretebilir?
+
+Outreach modülü, retrieved prospect ve company context kullanarak kişiselleştirilmiş cold email ve LinkedIn mesajları taslaklayabilir.
+
+### Competitor intelligence nasıl ele alınır?
+
+Competitor-intelligence modülü Tavily veya SerpAPI gibi public web retrieval API kullanır, ardından retrieved bilgileri source linkleriyle özetler.
+
+### Sistem nasıl değerlendirilecek?
+
+RAG pipeline, RAGAS metrikleriyle değerlendirilecektir: faithfulness, context precision ve answer relevancy.

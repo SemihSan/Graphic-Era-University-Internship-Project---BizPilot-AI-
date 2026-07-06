@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.streamlit/secrets.toml
+.env
+*.pyc
+*.pkl
+*.joblib
+*.sqlite3
+chroma_db/
+data/lead_scoring/raw/
+data/lead_scoring/processed/
+reports/generated/
+streamlit*.log

@@ -45,8 +45,10 @@ flowchart LR
 
 - `anagorev.md`: profesör tarafından verilen proje kapsamı ve kurallar
 - `docs/week1_project_proposal.md`: 1. hafta proje önerisi taslağı
-- `docs/week1_literature_review.md`: ilk literatür taraması notları
-- `docs/week1_professor_update.md`: profesöre gönderilebilecek kısa durum güncellemesi
+- `docs/week1_literature_review.md`: 1. hafta literatür taraması
+- `docs/week1_tool_setup.md`: Python, paket, API key ve Streamlit kurulum notları
+- `docs/week1_professor_update.md`: profesöre gönderilebilecek Week 1 durum güncellemesi
+- `docs/week1_status_checklist.md`: Week 1 teslim kontrol listesi
 - `data/company_docs/`: RAG pipeline için sentetik örnek şirket dokümanları
 - `data/lead_scoring/`: Kaggle dataset planı ve hazırlık notları
 - `reports/lead_scoring_baseline.md`: ilk Logistic Regression lead-scoring raporu
@@ -65,6 +67,8 @@ Teslim edilecekler:
 - Hazır lead-scoring dataset
 - RAG pipeline için örnek şirket dokümanları
 - İlk literatür taraması notları
+
+Durum: Week 1 teslim dosyaları hazırlandı.
 
 ## Öncelikli Sonraki Adım
 

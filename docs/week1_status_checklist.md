@@ -8,45 +8,48 @@ Week 1 deadline: Sunday, 12 July 2026
 
 - Requirement study source file exists: `anagorev.md`
 - Project README created
+- Project proposal finalized: `docs/week1_project_proposal.md`
+- Literature review finalized: `docs/week1_literature_review.md`
+- Tool setup documentation added: `docs/week1_tool_setup.md`
+- Professor update prepared: `docs/week1_professor_update.md`
 - Streamlit UI created: `app.py`
 - Turkish / English UI language switch added
 - Sample company documents created under `data/company_docs/`
-- Kaggle lead-scoring dataset downloaded into `data/lead_scoring/raw/`
-- Dataset cleaned into `data/lead_scoring/processed/lead_scoring_cleaned.csv`
+- Kaggle lead-scoring dataset downloaded locally into `data/lead_scoring/raw/`
+- Dataset cleaned locally into `data/lead_scoring/processed/lead_scoring_cleaned.csv`
 - Logistic Regression baseline trained
 - Lead scoring baseline report generated: `reports/lead_scoring_baseline.md`
 - Lead scoring predictor created: `src/lead_scoring_predictor.py`
 - Local Streamlit app verified at `http://127.0.0.1:8501`
+- Git repository initialized
+- GitHub remote connected
+- Initial project commit pushed to GitHub
 
-## Still Missing For Week 1
+## Week 1 Deliverable Status
 
-1. Finalize the project proposal
-   - File: `docs/week1_project_proposal.md`
-   - Need: polish wording, add final dataset/model status, and make it submission-ready.
+The Week 1 deliverable is ready:
 
-2. Expand the literature review
-   - File: `docs/week1_literature_review.md`
-   - Need: turn short notes into proper paragraphs for RAG, RAGAS, and lead scoring.
+- Project proposal: ready
+- Dataset: selected, downloaded locally, cleaned, and modeled
+- Sample company documents: ready
+- Literature review: ready
+- GitHub repository: ready
+- Streamlit MVP demo: ready
 
-3. Finish tool setup documentation
-   - Need: document Python version, virtual environment commands, installed packages, and API key placeholders.
-   - Actual API keys can stay private in `.env`.
+## GitHub Repository
 
-4. Install or verify RAG stack packages when needed
-   - Requirements list includes LangChain, LangGraph, ChromaDB, sentence-transformers, and RAGAS.
-   - Current working focus has installed the packages needed for Streamlit and lead scoring.
+```text
+https://github.com/SemihSan/Graphic-Era-University-Internship-Project---BizPilot-AI-
+```
 
-5. Prepare final Week 1 professor update
-   - File: `docs/week1_professor_update.md`
-   - Need: update with completed dataset, baseline metrics, and Streamlit UI status.
+## Next Technical Task For Week 2
 
-6. Commit project files to Git
-   - Local Git is initialized.
-   - Need: first commit after reviewing generated files.
+Implement the true RAG Q&A pipeline:
 
-7. Optional GitHub setup
-   - Need: create remote GitHub repository and push once the Week 1 files are clean.
-
-## Exact Next Task
-
-Update `docs/week1_project_proposal.md` with the actual dataset status and baseline model results.
+1. Load sample company documents.
+2. Split documents into chunks.
+3. Generate embeddings with sentence-transformers all-MiniLM-L6-v2.
+4. Store chunks in ChromaDB or FAISS.
+5. Retrieve relevant chunks for a user question.
+6. Generate a cited answer.
+7. Connect the RAG Q&A module to the Streamlit UI.

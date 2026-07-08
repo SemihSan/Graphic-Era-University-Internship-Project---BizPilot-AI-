@@ -89,7 +89,7 @@ The Streamlit UI includes a Turkish / English language switch.
 
 ### Next Step
 
-The next technical step is to implement the RAG Q&A module with LangChain, ChromaDB, and sentence-transformers so the chatbot can answer questions from company documents with citations.
+The next technical step is to connect the RAG CLI prototype to the Streamlit UI and then add an LLM generation layer.
 
 ## Türkçe
 
@@ -162,4 +162,4 @@ Streamlit arayüzünde Türkçe / English dil seçimi bulunur.
 
 ### Sonraki Adım
 
-Sonraki teknik adım, LangChain, ChromaDB ve sentence-transformers kullanarak RAG Q&A modülünü kurmak ve chatbot'un şirket dokümanlarından kaynaklı cevap üretmesini sağlamaktır.
+Sonraki teknik adım, RAG CLI prototipini Streamlit UI'a bağlamak ve ardından LLM generation layer eklemektir.

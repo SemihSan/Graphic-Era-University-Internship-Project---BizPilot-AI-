@@ -8,6 +8,7 @@ Current files:
 
 - `lead_scoring_baseline.py`: cleans the Kaggle lead-scoring dataset, trains the Logistic Regression baseline model, and generates the report.
 - `lead_scoring_predictor.py`: loads the trained model and produces a 0-100 lead score for a new lead.
+- `rag_pipeline.py`: loads company documents, chunks them, embeds them, indexes them in ChromaDB, and answers CLI questions with citations.
 - `__init__.py`: marks `src` as a Python package so modules can be imported from the Streamlit app.
 
 Planned modules:
@@ -26,6 +27,7 @@ Mevcut dosyalar:
 
 - `lead_scoring_baseline.py`: Kaggle lead-scoring dataset'ini temizler, Logistic Regression baseline modelini eğitir ve rapor oluşturur.
 - `lead_scoring_predictor.py`: eğitilmiş modeli yükler ve yeni bir lead için 0-100 arası skor üretir.
+- `rag_pipeline.py`: şirket dokümanlarını yükler, chunk'lara böler, embed eder, ChromaDB içinde indexler ve CLI sorularını citations ile cevaplar.
 - `__init__.py`: `src` klasörünü Python paketi olarak tanımlar; böylece modüller Streamlit uygulamasından import edilebilir.
 
 Planlanan modüller:

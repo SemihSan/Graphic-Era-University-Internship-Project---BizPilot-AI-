@@ -9,6 +9,11 @@ import numpy as np
 import pandas as pd
 from sklearn.pipeline import Pipeline
 
+try:
+    from src.lead_scoring_llm_explainer import generate_lead_score_explanation
+except ImportError:
+    from lead_scoring_llm_explainer import generate_lead_score_explanation
+
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 MODEL_PATH = ROOT_DIR / "models" / "lead_scoring_logreg.joblib"
@@ -60,9 +65,9 @@ def apply_rule_adjustments(lead_data: dict[str, Any]) -> tuple[int, list[str]]:
     lead_origin = str(lead_data.get("Lead Origin", "")).strip().lower()
     occupation = str(lead_data.get("What is your current occupation", "")).strip().lower()
 
-    total_visits = _to_float(lead_data.get("TotalVisits"))
-    total_time = _to_float(lead_data.get("Total Time Spent on Website"))
-    page_views = _to_float(lead_data.get("Page Views Per Visit"))
+    total_visits = _to_optional_float(lead_data.get("TotalVisits"))
+    total_time = _to_optional_float(lead_data.get("Total Time Spent on Website"))
+    page_views = _to_optional_float(lead_data.get("Page Views Per Visit"))
 
     if do_not_email == "no":
         adjustment += 4
@@ -82,21 +87,23 @@ def apply_rule_adjustments(lead_data: dict[str, Any]) -> tuple[int, list[str]]:
         adjustment -= 4
         reasons.append("Meslek bilgisi donusum olasiligini biraz dusuren grupta.")
 
-    if total_time >= 900:
-        adjustment += 7
-        reasons.append("Web sitesinde uzun sure gecirmis.")
-    elif total_time <= 60:
-        adjustment -= 6
-        reasons.append("Web sitesinde cok az sure gecirmis.")
+    if total_time is not None:
+        if total_time >= 900:
+            adjustment += 7
+            reasons.append("Web sitesinde uzun sure gecirmis.")
+        elif total_time <= 60:
+            adjustment -= 6
+            reasons.append("Web sitesinde cok az sure gecirmis.")
 
-    if total_visits >= 5:
-        adjustment += 4
-        reasons.append("Birden fazla ziyaret yapmis.")
-    elif total_visits <= 1:
-        adjustment -= 3
-        reasons.append("Ziyaret sayisi dusuk.")
+    if total_visits is not None:
+        if total_visits >= 5:
+            adjustment += 4
+            reasons.append("Birden fazla ziyaret yapmis.")
+        elif total_visits <= 1:
+            adjustment -= 3
+            reasons.append("Ziyaret sayisi dusuk.")
 
-    if page_views >= 3:
+    if page_views is not None and page_views >= 3:
         adjustment += 3
         reasons.append("Sayfa goruntuleme ortalamasi iyi.")
 
@@ -106,7 +113,7 @@ def apply_rule_adjustments(lead_data: dict[str, Any]) -> tuple[int, list[str]]:
     return adjustment, reasons
 
 
-def score_lead(lead_data: dict[str, Any], model: Pipeline | None = None) -> dict[str, Any]:
+def score_lead(lead_data: dict[str, Any], model: Pipeline | None = None, use_llm_explanation: bool = False) -> dict[str, Any]:
     model = model or load_model()
     input_frame = build_input_frame(lead_data, model)
 
@@ -115,7 +122,7 @@ def score_lead(lead_data: dict[str, Any], model: Pipeline | None = None) -> dict
     rule_adjustment, reasons = apply_rule_adjustments(lead_data)
     final_score = max(0, min(100, ml_score + rule_adjustment))
 
-    return {
+    result = {
         "ml_probability": round(ml_probability, 4),
         "ml_score": ml_score,
         "rule_adjustment": rule_adjustment,
@@ -123,7 +130,17 @@ def score_lead(lead_data: dict[str, Any], model: Pipeline | None = None) -> dict
         "label": classify_score(final_score),
         "explanation": build_explanation(final_score, ml_score, rule_adjustment, reasons),
         "rule_reasons": reasons,
+        "llm_explanation_used": False,
+        "explanation_provider": "rule_template",
+        "explanation_model": "",
     }
+
+    if use_llm_explanation:
+        llm_result = generate_lead_score_explanation(lead_data, result)
+        result["template_explanation"] = result["explanation"]
+        result.update(llm_result)
+
+    return result
 
 
 def classify_score(score: int) -> str:
@@ -153,6 +170,17 @@ def _to_float(value: Any) -> float:
         return 0.0
 
 
+def _to_optional_float(value: Any) -> float | None:
+    try:
+        if value is pd.NA or value is None or value == "":
+            return None
+        if isinstance(value, float) and np.isnan(value):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def demo() -> None:
     sample_lead = {
         "Lead Origin": "Lead Add Form",
@@ -168,7 +196,7 @@ def demo() -> None:
         "Last Notable Activity": "SMS Sent",
     }
 
-    result = score_lead(sample_lead)
+    result = score_lead(sample_lead, use_llm_explanation=True)
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 

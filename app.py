@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-from pathlib import Path
+import json
+import os
 import re
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 from src.lead_scoring_predictor import score_lead
+from src.rag_pipeline import COMPANY_DOCS_DATASET, answer_question, build_index, get_chroma_collection
 
 
 ROOT_DIR = Path(__file__).resolve().parent
-COMPANY_DOCS_DIR = ROOT_DIR / "data" / "company_docs"
 MODEL_PATH = ROOT_DIR / "models" / "lead_scoring_logreg.joblib"
 BASELINE_REPORT_PATH = ROOT_DIR / "reports" / "lead_scoring_baseline.md"
 PROCESSED_DATA_PATH = ROOT_DIR / "data" / "lead_scoring" / "processed" / "lead_scoring_cleaned.csv"
+CRM_SCORED_DATA_PATH = ROOT_DIR / "data" / "crm_sample_leads" / "scored_crm_leads.csv"
 
 LABELS = {
     "tr": {
@@ -40,6 +43,74 @@ REASON_TRANSLATIONS = {
     "Ziyaret sayisi dusuk.": "The visit count is low.",
     "Sayfa goruntuleme ortalamasi iyi.": "The average page views per visit is strong.",
     "Kural tabanli ek sinyal bulunmadi; skor agirlikli olarak ML modelinden geldi.": "No extra rule-based signal was found; the score mainly comes from the ML model.",
+}
+
+LEAD_PROMPT_FIELD_GUIDE = [
+    {
+        "key": "Lead Source",
+        "label_tr": "Lead source",
+        "label_en": "Lead source",
+        "hint_tr": "Google, organic search, direct traffic, referral veya chat gibi kanal",
+        "hint_en": "channel such as Google, organic search, direct traffic, referral, or chat",
+    },
+    {
+        "key": "Lead Origin",
+        "label_tr": "Lead origin",
+        "label_en": "Lead origin",
+        "hint_tr": "form doldurdu, landing page, API veya import gibi geliş kaynağı",
+        "hint_en": "form submission, landing page, API, or import",
+    },
+    {
+        "key": "Do Not Email",
+        "label_tr": "Email permission",
+        "label_en": "Email permission",
+        "hint_tr": "email izni var veya email izni yok bilgisi",
+        "hint_en": "whether email outreach is allowed or not allowed",
+    },
+    {
+        "key": "What is your current occupation",
+        "label_tr": "Current occupation",
+        "label_en": "Current occupation",
+        "hint_tr": "çalışan profesyonel, öğrenci veya işsiz gibi profil bilgisi",
+        "hint_en": "working professional, student, or unemployed",
+    },
+    {
+        "key": "TotalVisits",
+        "label_tr": "Total visits",
+        "label_en": "Total visits",
+        "hint_tr": "siteyi kaç kez ziyaret ettiği",
+        "hint_en": "how many times the lead visited the site",
+    },
+    {
+        "key": "Total Time Spent on Website",
+        "label_tr": "Time spent on website",
+        "label_en": "Time spent on website",
+        "hint_tr": "sitede kaç saniye geçirdiği",
+        "hint_en": "how many seconds the lead spent on the site",
+    },
+    {
+        "key": "Page Views Per Visit",
+        "label_tr": "Page views per visit",
+        "label_en": "Page views per visit",
+        "hint_tr": "ziyaret başına ortalama sayfa görüntüleme",
+        "hint_en": "average page views per visit",
+    },
+    {
+        "key": "Last Activity",
+        "label_tr": "Last activity",
+        "label_en": "Last activity",
+        "hint_tr": "son aktivite: SMS Sent, Email Opened veya Page Visited gibi",
+        "hint_en": "last activity such as SMS Sent, Email Opened, or Page Visited",
+    },
+]
+MIN_PROMPT_FIELDS_FOR_SCORING = 2
+PROMPT_QUALIFICATION_SIGNAL_FIELDS = {
+    "Lead Origin",
+    "Do Not Email",
+    "What is your current occupation",
+    "TotalVisits",
+    "Total Time Spent on Website",
+    "Page Views Per Visit",
 }
 
 
@@ -162,28 +233,32 @@ def load_dataset_preview() -> pd.DataFrame:
 
 
 @st.cache_data
-def load_company_documents() -> list[dict[str, str]]:
-    docs: list[dict[str, str]] = []
-    if not COMPANY_DOCS_DIR.exists():
-        return docs
+def load_public_corpus_preview() -> pd.DataFrame:
+    rows: list[dict[str, str]] = []
+    if not COMPANY_DOCS_DATASET.exists():
+        return pd.DataFrame()
 
-    for path in sorted(COMPANY_DOCS_DIR.glob("*.md")):
-        text = path.read_text(encoding="utf-8")
-        docs.append(
+    for line in COMPANY_DOCS_DATASET.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        rows.append(
             {
-                "name": path.stem.replace("_", " ").title(),
-                "file": path.name,
-                "type": extract_value(text, "Document type") or "document",
-                "source_id": extract_value(text, "Source ID") or path.stem,
-                "text": text,
+                "company": record.get("company", ""),
+                "document_type": record.get("document_type", ""),
+                "title": record.get("title", ""),
+                "source_url": record.get("source_url", ""),
+                "retrieved_date": record.get("retrieved_date", ""),
             }
         )
-    return docs
+    return pd.DataFrame(rows)
 
 
-def extract_value(text: str, key: str) -> str | None:
-    match = re.search(rf"^{re.escape(key)}:\s*(.+)$", text, flags=re.MULTILINE)
-    return match.group(1).strip() if match else None
+@st.cache_data
+def load_scored_crm_leads() -> pd.DataFrame:
+    if not CRM_SCORED_DATA_PATH.exists():
+        return pd.DataFrame()
+    return pd.read_csv(CRM_SCORED_DATA_PATH)
 
 
 def option_values(df: pd.DataFrame, column: str, fallback: list[str]) -> list[str]:
@@ -217,7 +292,13 @@ def display_reason(reason: str, lang: str) -> str:
 
 
 def display_explanation(result: dict, lang: str) -> str:
+    if result.get("llm_explanation_used"):
+        return result["explanation"]
+
     if lang == "tr":
+        return build_turkish_display_explanation(result)
+
+    if result.get("explanation_provider") in {"template", "template_fallback"}:
         return result["explanation"]
 
     direction = "increased" if result["rule_adjustment"] >= 0 else "decreased"
@@ -227,6 +308,362 @@ def display_explanation(result: dict, lang: str) -> str:
         f"The rule-based layer {direction} the score by {abs(result['rule_adjustment'])} points. "
         f"The final score is {result['final_score']}/100. "
         f"{' '.join(translated_reasons[:3])}"
+    )
+
+
+def score_lead_for_ui(lead_data: dict) -> dict:
+    return score_lead(lead_data, use_llm_explanation=True)
+
+
+def build_turkish_display_explanation(result: dict) -> str:
+    rule_adjustment = int(result.get("rule_adjustment", 0))
+    if rule_adjustment > 0:
+        adjustment_sentence = f"Kural tabanli katman skoru {rule_adjustment} puan artirdi."
+    elif rule_adjustment < 0:
+        adjustment_sentence = f"Kural tabanli katman skoru {abs(rule_adjustment)} puan azaltti."
+    else:
+        adjustment_sentence = "Kural tabanli katman skoru degistirmedi."
+
+    reasons = result.get("rule_reasons", [])
+    reason_text = " ".join(reasons[:3])
+    label = display_label(result.get("label", ""), "tr")
+    final_score = int(result.get("final_score", 0))
+
+    if final_score >= 75:
+        action = "Satis ekibinin oncelikli olarak takip etmesi mantikli."
+    elif final_score >= 50:
+        action = "Lead takip edilebilir, fakat once ek niyet sinyali toplamak iyi olur."
+    else:
+        action = "Daha guclu satin alma sinyali gelene kadar dusuk oncelikte tutulabilir."
+
+    return (
+        f"ML modeli bu lead icin {result.get('ml_score', 0)}/100 temel skor uretti. "
+        f"{adjustment_sentence} Final skor {final_score}/100 oldu ({label}). "
+        f"{reason_text} Onerilen aksiyon: {action}"
+    )
+
+
+def parse_lead_prompt(prompt: str, fallback_lead_data: dict | None, df: pd.DataFrame) -> dict:
+    """Extract CRM-style lead fields from a short natural-language prompt."""
+    lead_data = dict(fallback_lead_data or {})
+    text = normalize_prompt_text(prompt)
+
+    do_not_email = parse_do_not_email(text)
+    if do_not_email:
+        lead_data["Do Not Email"] = do_not_email
+
+    lead_origin = match_known_value(
+        text,
+        option_values(df, "Lead Origin", ["Lead Add Form", "API", "Landing Page Submission", "Lead Import"]),
+        {
+            "Lead Add Form": [
+                "lead add form",
+                "add form",
+                "form submission",
+                "filled form",
+                "submitted form",
+                "form doldurdu",
+                "formu doldurdu",
+                "form doldurmus",
+                "formu doldurmus",
+                "form gonderdi",
+                "formu gonderdi",
+                "formdan geldi",
+                "form ile geldi",
+                "lead form",
+                "web formu",
+            ],
+            "Landing Page Submission": [
+                "landing page submission",
+                "landing page",
+                "landing pageden",
+                "landing page'den",
+            ],
+            "Lead Import": ["lead import", "imported lead", "import edildi", "ice aktarildi"],
+            "API": [" api ", "from api", "via api", "api ile"],
+        },
+    )
+    if lead_origin:
+        lead_data["Lead Origin"] = lead_origin
+
+    lead_source = match_known_value(
+        text,
+        option_values(df, "Lead Source", ["Google", "Direct Traffic", "Organic Search", "Olark Chat", "Referral Sites"]),
+        {
+            "Google": ["google"],
+            "Direct Traffic": ["direct traffic", "direct"],
+            "Organic Search": ["organic search", "organic"],
+            "Olark Chat": ["olark chat", "chat"],
+            "Referral Sites": ["referral sites", "referral"],
+        },
+    )
+    if lead_source:
+        lead_data["Lead Source"] = lead_source
+
+    occupation = match_known_value(
+        text,
+        option_values(df, "What is your current occupation", ["Working Professional", "Student", "Unemployed"]),
+        {
+            "Working Professional": ["working professional", "professional", "employee", "employed", "calisan", "profesyonel", "is sahibi"],
+            "Student": ["student", "ogrenci"],
+            "Unemployed": ["unemployed", "issiz"],
+        },
+    )
+    if occupation:
+        lead_data["What is your current occupation"] = occupation
+
+    last_activity = match_known_value(
+        text,
+        option_values(df, "Last Activity", ["SMS Sent", "Email Opened", "Page Visited on Website"]),
+        {
+            "SMS Sent": ["sms sent", "sent sms", "sms", "sms gonderildi"],
+            "Email Opened": ["email opened", "opened email", "email acti", "mail acti"],
+            "Page Visited on Website": [
+                "page visited on website",
+                "visited page",
+                "page visited",
+                "sayfa ziyaret",
+                "siteyi ziyaret",
+                "siteye girmis",
+                "siteye girdi",
+            ],
+        },
+    )
+    if last_activity:
+        lead_data["Last Activity"] = last_activity
+
+    last_notable_activity = match_known_value(
+        text,
+        option_values(df, "Last Notable Activity", ["SMS Sent", "Email Opened", "Modified"]),
+        {
+            "SMS Sent": ["last notable activity sms", "notable sms"],
+            "Email Opened": ["last notable activity email", "notable email"],
+            "Modified": ["modified"],
+        },
+    )
+    if last_notable_activity:
+        lead_data["Last Notable Activity"] = last_notable_activity
+
+    total_visits = extract_number(
+        text,
+        [
+            r"(?:total\s*)?visits?\s*(?:is|are|=|:)?\s*(\d+(?:\.\d+)?)",
+            r"(\d+(?:\.\d+)?)\s*(?:total\s*)?visits?",
+            r"(?:ziyaret|ziyaret sayisi|site ziyaret)\s*(?:=|:)?\s*(\d+(?:\.\d+)?)",
+            r"(\d+(?:\.\d+)?)\s*ziyaret",
+            r"(?:siteye|siteye girmis|siteye girdi|siteye girmisti)\s*(?:\w+\s*)?(\d+(?:\.\d+)?)\s*kere",
+            r"(\d+(?:\.\d+)?)\s*kere\s*(?:siteye|siteye girmis|siteye girdi)",
+        ],
+    )
+    if total_visits is not None:
+        lead_data["TotalVisits"] = int(total_visits)
+
+    total_time = extract_number(
+        text,
+        [
+            r"(?:total\s*)?(?:time spent on website|website time|time spent)\s*(?:is|=|:)?\s*(\d+(?:\.\d+)?)",
+            r"spent\s*(\d+(?:\.\d+)?)\s*(?:seconds|sec|s|minutes|min)?",
+            r"(?:sitede|web sitesinde|website)\s*(\d+(?:\.\d+)?)\s*(?:saniye|sn|sec|seconds)",
+            r"(\d+(?:\.\d+)?)\s*(?:saniye|sn|sec|seconds)",
+        ],
+    )
+    if total_time is not None:
+        lead_data["Total Time Spent on Website"] = int(total_time)
+
+    page_views = extract_number(
+        text,
+        [
+            r"page views per visit\s*(?:is|=|:)?\s*(\d+(?:\.\d+)?)",
+            r"(\d+(?:\.\d+)?)\s*page views",
+            r"(?:sayfa goruntuleme|sayfa goruntulemesi)\s*(?:=|:)?\s*(\d+(?:\.\d+)?)",
+            r"(\d+(?:\.\d+)?)\s*sayfa goruntuleme",
+        ],
+    )
+    if page_views is not None:
+        lead_data["Page Views Per Visit"] = float(page_views)
+
+    return lead_data
+
+
+def normalize_prompt_text(prompt: str) -> str:
+    text = prompt.lower()
+    replacements = {
+        "ç": "c",
+        "ğ": "g",
+        "ı": "i",
+        "ö": "o",
+        "ş": "s",
+        "ü": "u",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    return f" {text} "
+
+
+def parse_do_not_email(text: str) -> str | None:
+    if re.search(r"do not email\s*(?:is|=|:)?\s*yes", text):
+        return "Yes"
+    if re.search(r"do not email\s*(?:is|=|:)?\s*no", text):
+        return "No"
+    if any(
+        phrase in text
+        for phrase in [
+            "does not allow email",
+            "email not allowed",
+            "email opt out",
+            "opted out",
+            "email izni yok",
+            "mail izni yok",
+            "eposta izni yok",
+            "e-posta izni yok",
+            "iletisim izni yok",
+            "email atilmasin",
+            "mail atilmasin",
+            "email gonderilmesin",
+        ]
+    ):
+        return "Yes"
+    if any(
+        phrase in text
+        for phrase in [
+            "email allowed",
+            "can email",
+            "email opt in",
+            "opted in",
+            "email izni var",
+            "mail izni var",
+            "eposta izni var",
+            "e-posta izni var",
+            "iletisim izni var",
+            "email atilabilir",
+            "mail atilabilir",
+            "email gonderilebilir",
+            "mail atmamiza izin veriyor",
+            "email atmamiza izin veriyor",
+            "mail gondermemize izin veriyor",
+            "email gondermemize izin veriyor",
+            "mail atabiliriz",
+            "email atabiliriz",
+            "mail gonderebiliriz",
+            "email gonderebiliriz",
+        ]
+    ):
+        return "No"
+    return None
+
+
+def match_known_value(text: str, options: list[str], aliases: dict[str, list[str]]) -> str | None:
+    padded_text = f" {text} "
+    for value in options:
+        lowered = value.lower()
+        if lowered in text:
+            return value
+        for alias in aliases.get(value, []):
+            if alias.strip() in padded_text:
+                return value
+    return None
+
+
+def extract_number(text: str, patterns: list[str]) -> float | None:
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                return None
+    return None
+
+
+def get_missing_lead_prompt_fields(lead_data: dict) -> list[dict[str, str]]:
+    missing_fields: list[dict[str, str]] = []
+    for field in LEAD_PROMPT_FIELD_GUIDE:
+        value = lead_data.get(field["key"])
+        if is_missing_lead_value(value):
+            missing_fields.append(field)
+    return missing_fields
+
+
+def get_present_lead_prompt_fields(lead_data: dict) -> list[dict[str, str]]:
+    present_fields: list[dict[str, str]] = []
+    for field in LEAD_PROMPT_FIELD_GUIDE:
+        value = lead_data.get(field["key"])
+        if not is_missing_lead_value(value):
+            present_fields.append(field)
+    return present_fields
+
+
+def validate_prompt_lead_for_scoring(lead_data: dict, lang: str) -> tuple[bool, str]:
+    present_fields = get_present_lead_prompt_fields(lead_data)
+    present_keys = {field["key"] for field in present_fields}
+    has_qualification_signal = bool(present_keys.intersection(PROMPT_QUALIFICATION_SIGNAL_FIELDS))
+
+    if len(present_fields) < MIN_PROMPT_FIELDS_FOR_SCORING:
+        message = (
+            "This prompt is too thin for lead scoring. I found only one CRM-style field, so the score would be misleading. "
+            "Add at least one more lead signal such as form submission, email permission, occupation, visits, website time, or page views."
+            if lang == "en"
+            else "Bu prompt lead scoring icin fazla zayif. Sadece bir CRM-style alan bulundu, bu durumda skor yanıltıcı olur. "
+            "Form doldurdu, email izni, meslek, ziyaret sayisi, sitede gecirilen sure veya sayfa goruntuleme gibi en az bir sinyal daha ekle."
+        )
+        return False, message
+
+    if not has_qualification_signal:
+        message = (
+            "This prompt contains basic source/activity information, but no strong qualification signal. "
+            "Add email permission, lead origin, occupation, visits, website time, or page views before scoring."
+            if lang == "en"
+            else "Bu prompt temel kaynak/aktivite bilgisi iceriyor ama guclu qualification sinyali yok. "
+            "Skorlamadan once email izni, lead origin, meslek, ziyaret sayisi, sitede gecirilen sure veya sayfa goruntuleme ekle."
+        )
+        return False, message
+
+    return True, ""
+
+
+def is_missing_lead_value(value) -> bool:
+    if value is None or value == "":
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def render_prompt_quality_suggestions(lead_data: dict, lang: str) -> None:
+    missing_fields = get_missing_lead_prompt_fields(lead_data)
+    if not missing_fields:
+        st.success(
+            "Prompt contains the main lead fields needed for a reliable score."
+            if lang == "en"
+            else "Prompt, güvenilir skor için gereken ana lead alanlarını içeriyor."
+        )
+        return
+
+    if lang == "en":
+        st.info(
+            "Some useful lead fields were not found in the prompt. They are treated as unknown, not as zero. "
+            "Adding them can make the score more reliable and easier to explain."
+        )
+        st.markdown("**Missing information suggestions:**")
+        for field in missing_fields:
+            st.write(f"- {field['label_en']}: {field['hint_en']}")
+        st.caption(
+            "Example: Lead came from a Google form, email is allowed, working professional, "
+            "6 visits, 1250 seconds on site, 3.5 page views per visit, last activity SMS Sent."
+        )
+        return
+
+    st.info(
+        "Prompt icinde bazi faydali lead alanlari bulunamadi. Bunlar 0 degil, bilinmiyor kabul edilir. "
+        "Bu bilgileri eklersen skor daha guvenilir ve aciklanabilir olur."
+    )
+    st.markdown("**Eksik bilgi önerileri:**")
+    for field in missing_fields:
+        st.write(f"- {field['label_tr']}: {field['hint_tr']}")
+    st.caption(
+        "Ornek: Google uzerinden form doldurdu, email izni var, calisan profesyonel, "
+        "6 ziyaret, sitede 1250 saniye, 3.5 sayfa goruntuleme, son aktivite SMS Sent."
     )
 
 
@@ -351,7 +788,7 @@ def render_header(lang: str) -> None:
 def render_dashboard(lang: str) -> None:
     is_en = lang == "en"
     df = load_dataset_preview()
-    docs = load_company_documents()
+    corpus_df = load_public_corpus_preview()
 
     section_title = "Project Status" if is_en else "Proje Durumu"
     st.markdown(f'<div class="bp-section-title">{section_title}</div>', unsafe_allow_html=True)
@@ -360,7 +797,7 @@ def render_dashboard(lang: str) -> None:
     col1.metric("Clean Dataset" if is_en else "Temiz Dataset", f"{len(df):,}" if not df.empty else ("Not ready" if is_en else "Hazır değil"))
     col2.metric("Model", "Logistic Regression", "Baseline")
     col3.metric("ROC-AUC", "0.8703")
-    col4.metric("RAG Documents" if is_en else "RAG Dokümanı", str(len(docs)))
+    col4.metric("RAG Corpus" if is_en else "RAG Corpus", str(len(corpus_df)))
 
     st.divider()
 
@@ -419,7 +856,72 @@ def render_lead_qualification(lang: str) -> None:
 
     df = load_dataset_preview()
 
+    with st.form("lead_prompt_only_form"):
+        st.markdown("#### Prompt-only lead scoring" if is_en else "#### Sadece prompt ile lead skorlama")
+        st.caption(
+            "This mode does not require the structured form. BizPilot extracts CRM-style fields directly from the prompt."
+            if is_en
+            else "Bu mod structured form gerektirmez. BizPilot CRM-style alanlari dogrudan prompt'tan cikarir."
+        )
+        st.caption(
+            "Missing fields are treated as unknown, not as zero."
+            if is_en
+            else "Yazilmayan alanlar 0 degil, bilinmiyor kabul edilir."
+        )
+        prompt_only_text = st.text_area(
+            "Lead prompt" if is_en else "Lead prompt'u",
+            value="",
+            placeholder=(
+                "Example: Lead came from Lead Add Form via Google. Email allowed. "
+                "Working professional, 6 visits, spent 1250 seconds, 3.5 page views per visit, last activity SMS Sent."
+                if is_en
+                else "Ornek: Google uzerinden form doldurdu, email izni var, calisan profesyonel, "
+                "6 ziyaret, sitede 1250 saniye, 3.5 sayfa goruntuleme, son aktivite SMS Sent."
+            ),
+            height=120,
+        )
+        prompt_submitted = st.form_submit_button(
+            "Score Prompt Lead" if is_en else "Prompt Lead'i Skorla",
+            use_container_width=True,
+        )
+
+    if prompt_submitted:
+        parsed_lead = parse_lead_prompt(prompt_only_text, None, df)
+        is_scoreable_prompt, prompt_validation_message = validate_prompt_lead_for_scoring(parsed_lead, lang)
+        st.session_state["last_lead_prompt"] = prompt_only_text.strip()
+        st.session_state["last_lead_input_mode"] = "prompt_only"
+
+        if not prompt_only_text.strip():
+            st.warning("Please enter a lead prompt." if is_en else "Lutfen lead prompt'u yaz.")
+            st.session_state.pop("last_score", None)
+            st.session_state.pop("last_prompt_missing_fields", None)
+        elif not parsed_lead:
+            st.warning(
+                "No CRM-style lead fields were found in the prompt. Try mentioning lead origin, source, email permission, occupation, visits, website time, or page views."
+                if is_en
+                else "Prompt icinde CRM-style lead alani bulunamadi. Lead origin, source, email izni, occupation, visits, website time veya page views yazmayi dene."
+            )
+            st.session_state.pop("last_score", None)
+            st.session_state.pop("last_prompt_missing_fields", None)
+        elif not is_scoreable_prompt:
+            st.warning(prompt_validation_message)
+            st.info(
+                "Example: Lead came from a Google form, email is allowed, working professional, 6 visits, 1250 seconds on site."
+                if is_en
+                else "Ornek: Google uzerinden form doldurdu, email izni var, calisan profesyonel, 6 ziyaret, sitede 1250 saniye kaldi."
+            )
+            with st.expander("Fields found in the prompt" if is_en else "Prompt icinde bulunan alanlar"):
+                st.json(parsed_lead)
+            st.session_state.pop("last_score", None)
+            st.session_state["last_lead"] = parsed_lead
+            st.session_state["last_prompt_missing_fields"] = get_missing_lead_prompt_fields(parsed_lead)
+        else:
+            st.session_state["last_lead"] = parsed_lead
+            st.session_state["last_prompt_missing_fields"] = get_missing_lead_prompt_fields(parsed_lead)
+            st.session_state["last_score"] = score_lead_for_ui(parsed_lead)
+
     with st.form("lead_form"):
+        st.markdown("#### Structured form scoring" if is_en else "#### Structured form ile skorlama")
         c1, c2, c3 = st.columns(3)
         lead_origin = c1.selectbox(
             "Lead Origin",
@@ -453,7 +955,7 @@ def render_lead_qualification(lang: str) -> None:
         submitted = st.form_submit_button("Score Lead" if is_en else "Lead'i Skorla", use_container_width=True)
 
     if submitted:
-        lead_data = {
+        fallback_lead_data = {
             "Lead Origin": lead_origin,
             "Lead Source": lead_source,
             "Do Not Email": do_not_email,
@@ -465,8 +967,11 @@ def render_lead_qualification(lang: str) -> None:
             "Last Activity": last_activity,
             "Last Notable Activity": last_notable_activity,
         }
+        lead_data = fallback_lead_data
         st.session_state["last_lead"] = lead_data
-        st.session_state["last_score"] = score_lead(lead_data)
+        st.session_state["last_lead_prompt"] = ""
+        st.session_state.pop("last_prompt_missing_fields", None)
+        st.session_state["last_score"] = score_lead_for_ui(lead_data)
 
     result = st.session_state.get("last_score")
     if result:
@@ -490,9 +995,29 @@ def render_lead_qualification(lang: str) -> None:
         with right:
             st.markdown("#### Explanation" if is_en else "#### Açıklama")
             st.write(display_explanation(result, lang))
+            st.caption(
+                f"Score engine: ML + rules | Explanation provider: {result.get('explanation_provider', 'rule_template')}"
+                if is_en
+                else f"Skor motoru: ML + kurallar | Açıklama sağlayıcı: {result.get('explanation_provider', 'rule_template')}"
+            )
+            if result.get("llm_error") and not result.get("llm_explanation_used"):
+                with st.expander("LLM fallback note" if is_en else "LLM fallback notu"):
+                    st.write(result["llm_error"])
             st.markdown("#### Rule Signals" if is_en else "#### Kural Sinyalleri")
             for reason in result["rule_reasons"]:
                 st.write(f"- {display_reason(reason, lang)}")
+            if st.session_state.get("last_lead_prompt"):
+                st.markdown("#### Prompt Quality" if is_en else "#### Prompt Kalitesi")
+                render_prompt_quality_suggestions(st.session_state.get("last_lead", {}), lang)
+            with st.expander("Parsed lead input" if is_en else "Parse edilen lead girdisi"):
+                if st.session_state.get("last_lead_prompt"):
+                    st.caption(
+                        "Original prompt:"
+                        if is_en
+                        else "Orijinal prompt:"
+                    )
+                    st.write(st.session_state["last_lead_prompt"])
+                st.json(st.session_state.get("last_lead", {}))
     else:
         st.info(
             "Enter lead information and score it to see the result here."
@@ -501,42 +1026,165 @@ def render_lead_qualification(lang: str) -> None:
         )
 
 
-def render_document_workspace(lang: str) -> None:
+def render_crm_batch_results(lang: str) -> None:
     is_en = lang == "en"
-    st.markdown('<div class="bp-section-title">Company Documents Workspace</div>', unsafe_allow_html=True)
+    with st.expander("Show CRM-style batch scoring output" if is_en else "CRM-style batch skor sonucunu göster"):
+        scored_df = load_scored_crm_leads()
+        if scored_df.empty:
+            st.info(
+                "Batch output was not found. Run `.venv\\Scripts\\python.exe src\\lead_scoring_batch.py --llm` first."
+                if is_en
+                else "Batch output bulunamadı. Önce `.venv\\Scripts\\python.exe src\\lead_scoring_batch.py --llm` çalıştır."
+            )
+            return
+
+        visible_columns = [
+            "crm_lead_id",
+            "company_name",
+            "contact_name",
+            "industry",
+            "final_score",
+            "label",
+            "explanation_provider",
+            "llm_explanation_used",
+            "explanation",
+            "llm_error",
+        ]
+        visible_columns = [column for column in visible_columns if column in scored_df.columns]
+        st.dataframe(scored_df[visible_columns], use_container_width=True, hide_index=True)
+
+        if "explanation_provider" in scored_df.columns:
+            providers = scored_df["explanation_provider"].value_counts().to_dict()
+            provider_summary = ", ".join(f"{name}: {count}" for name, count in providers.items())
+            st.caption(
+                f"Explanation providers: {provider_summary}"
+                if is_en
+                else f"Açıklama sağlayıcıları: {provider_summary}"
+            )
+
+
+def render_rag_workspace(lang: str) -> None:
+    is_en = lang == "en"
+    st.markdown('<div class="bp-section-title">RAG Q&A Workspace</div>', unsafe_allow_html=True)
     st.caption(
-        "This is not the full RAG pipeline yet; it is a Week 1 workspace for reviewing and searching sample company documents."
+        "Test the Week 2 RAG prototype from the browser: read the synthetic BizPilot company corpus, build the ChromaDB index, ask questions, and view citations."
         if is_en
-        else "Bu alan full RAG pipeline değildir; Week 1 için örnek şirket dokümanlarını inceleme ve arama ekranıdır."
+        else "Week 2 RAG prototipini tarayıcıdan test et: synthetic BizPilot company corpus'u oku, ChromaDB index'i oluştur, soru sor ve citation'ları gör."
     )
 
-    docs = load_company_documents()
-    query = st.text_input(
-        "Search documents" if is_en else "Dokümanlarda ara",
-        placeholder="Example: pricing, outreach, competitor, lead scoring" if is_en else "Örnek: pricing, outreach, competitor, lead scoring",
-    )
+    corpus_df = load_public_corpus_preview()
+    try:
+        indexed_chunks = get_chroma_collection(reset=False).count()
+        index_error = ""
+    except Exception as exc:
+        indexed_chunks = 0
+        index_error = str(exc)
 
-    if not docs:
-        st.warning("Company documents not found." if is_en else "Company document bulunamadı.")
-        return
+    metric_1, metric_2, metric_3 = st.columns(3)
+    metric_1.metric("Corpus records" if is_en else "Corpus kaydı", len(corpus_df))
+    metric_2.metric("Indexed chunks" if is_en else "Indexlenen chunk", indexed_chunks)
+    metric_3.metric("Embedding", "all-MiniLM-L6-v2")
 
-    if query:
-        terms = [term.lower() for term in query.split() if term.strip()]
-        ranked = []
-        for doc in docs:
-            text = doc["text"].lower()
-            score = sum(text.count(term) for term in terms)
-            if score > 0:
-                ranked.append((score, doc))
-        ranked.sort(key=lambda item: item[0], reverse=True)
-        visible_docs = [doc for _, doc in ranked] or docs
-    else:
-        visible_docs = docs
+    if index_error:
+        st.warning(
+            f"ChromaDB index could not be read: {index_error}"
+            if is_en
+            else f"ChromaDB index okunamadı: {index_error}"
+        )
 
-    for doc in visible_docs:
-        with st.expander(f"{doc['name']} | {doc['type']} | {doc['source_id']}"):
-            st.markdown(doc["text"])
-            st.caption(f"Source file: data/company_docs/{doc['file']}")
+    left, right = st.columns([0.9, 1.1], gap="large")
+    with left:
+        st.markdown("#### RAG Index")
+        st.write(f"Dataset: `{COMPANY_DOCS_DATASET.relative_to(ROOT_DIR)}`")
+        if st.button(
+            "Build / Refresh ChromaDB Index" if is_en else "ChromaDB Index'i Oluştur / Yenile",
+            use_container_width=True,
+        ):
+            try:
+                with st.spinner("Building RAG index..." if is_en else "RAG index oluşturuluyor..."):
+                    indexed_chunks = build_index(reset=True)
+                st.success(
+                    f"RAG index is ready. Indexed chunks: {indexed_chunks}"
+                    if is_en
+                    else f"RAG index hazır. Indexlenen chunk sayısı: {indexed_chunks}"
+                )
+            except Exception as exc:
+                st.error(
+                    f"Index build failed: {exc}"
+                    if is_en
+                    else f"Index oluşturma başarısız oldu: {exc}"
+                )
+
+        st.markdown("#### Corpus Preview" if is_en else "#### Corpus Önizleme")
+        if corpus_df.empty:
+            st.warning("Synthetic BizPilot corpus was not found." if is_en else "Synthetic BizPilot corpus bulunamadı.")
+        else:
+            st.dataframe(corpus_df, use_container_width=True, hide_index=True)
+
+    with right:
+        st.markdown("#### Ask RAG" if is_en else "#### RAG'e Soru Sor")
+        question = st.text_input(
+            "Question" if is_en else "Soru",
+            value="Which plan is best for a growing sales team and why?",
+            placeholder="Example: How does prompt-only lead qualification work?",
+        )
+        rag_prompt = st.text_area(
+            "RAG answer prompt" if is_en else "RAG cevap prompt'u",
+            value=(
+                "Answer as a concise business-development assistant. "
+                "Use short paragraphs and cite the relevant sources."
+            ),
+            help=(
+                "This controls the answer style and business focus. It cannot override the retrieved context or citation rules."
+                if is_en
+                else "Bu alan cevabın stilini ve business odağını belirler. Retrieved context ve citation kurallarını override edemez."
+            ),
+            height=95,
+        )
+        top_k = st.slider(
+            "Retrieved chunks" if is_en else "Getirilecek chunk sayısı",
+            min_value=1,
+            max_value=8,
+            value=5,
+        )
+        use_llm_answer = st.checkbox(
+            "Generate final answer with LLM" if is_en else "Final cevabı LLM ile üret",
+            value=True,
+            help=(
+                "Retrieves ChromaDB context first, then sends only that context to the configured LLM provider."
+                if is_en
+                else "Önce ChromaDB context getirir, sonra sadece bu context'i yapılandırılmış LLM provider'a gönderir."
+            ),
+        )
+
+        if st.button("Ask Question" if is_en else "Soruyu Çalıştır", use_container_width=True):
+            if not question.strip():
+                st.warning("Please enter a question." if is_en else "Lütfen bir soru yaz.")
+            else:
+                try:
+                    with st.spinner(
+                        "Retrieving context and generating answer..."
+                        if is_en
+                        else "Context getiriliyor ve cevap üretiliyor..."
+                    ):
+                        response = answer_question(
+                            question.strip(),
+                            top_k=top_k,
+                            use_llm=use_llm_answer,
+                            user_prompt=rag_prompt,
+                        )
+                    st.code(response, language="text")
+                except Exception as exc:
+                    st.error(
+                        f"RAG question failed: {exc}"
+                        if is_en
+                        else f"RAG sorusu calismadi: {exc}"
+                    )
+                    st.info(
+                        "If the index is empty, click Build / Refresh ChromaDB Index first."
+                        if is_en
+                        else "Index boşsa önce ChromaDB Index'i Oluştur / Yenile butonuna bas."
+                    )
 
 
 def render_outreach_preview(lang: str) -> None:
@@ -653,9 +1301,9 @@ def main() -> None:
         st.stop()
 
     tabs = (
-        ["Dashboard", "Lead Qualification", "Company Docs", "Outreach Preview", "Roadmap"]
+        ["Dashboard", "Lead Qualification", "RAG Q&A", "Outreach Preview", "Roadmap"]
         if is_en
-        else ["Dashboard", "Lead Qualification", "Company Docs", "Outreach Preview", "Yol Haritası"]
+        else ["Dashboard", "Lead Qualification", "RAG Q&A", "Outreach Preview", "Yol Haritası"]
     )
     dashboard_tab, lead_tab, docs_tab, outreach_tab, roadmap_tab = st.tabs(tabs)
 
@@ -663,8 +1311,9 @@ def main() -> None:
         render_dashboard(lang)
     with lead_tab:
         render_lead_qualification(lang)
+        render_crm_batch_results(lang)
     with docs_tab:
-        render_document_workspace(lang)
+        render_rag_workspace(lang)
     with outreach_tab:
         render_outreach_preview(lang)
     with roadmap_tab:

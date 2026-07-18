@@ -1,0 +1,9 @@
+crm_lead_id,company_name,contact_name,job_title,company_size,industry,Lead Origin,Lead Source,Do Not Email,Do Not Call,TotalVisits,Total Time Spent on Website,Page Views Per Visit,Last Activity,Country,What is your current occupation,Last Notable Activity
+CRM-001,Northstar CRM Solutions,Aarav Mehta,Sales Operations Manager,120,Software,Lead Add Form,Google,No,No,8,1450,4.2,SMS Sent,India,Working Professional,SMS Sent
+CRM-002,BluePeak Retail,Neha Rao,Marketing Lead,45,Ecommerce,Landing Page Submission,Organic Search,No,No,4,720,2.8,Email Opened,India,Working Professional,Email Opened
+CRM-003,Campus Labs India,Rohan Sen,Student Founder,8,Education,API,Referral Sites,Yes,No,2,95,1.5,Page Visited,India,Student,Page Visited
+CRM-004,FinEdge Advisory,Priya Sharma,Founder,25,Financial Services,Lead Add Form,Direct Traffic,No,No,10,1880,5.1,SMS Sent,India,Working Professional,Modified
+CRM-005,UrbanSupply Co,Arjun Kapoor,Operations Head,80,Logistics,Lead Import,Olark Chat,No,No,5,610,3.0,Olark Chat Conversation,India,Working Professional,Olark Chat Conversation
+CRM-006,SkillSpring Academy,Isha Verma,Program Coordinator,30,Education,Landing Page Submission,Google,No,No,1,40,1.0,Unsubscribed,India,Unemployed,Unsubscribed
+CRM-007,DataNova Systems,Karan Malhotra,Revenue Manager,200,Software,Lead Add Form,Organic Search,No,No,7,1320,3.6,Email Link Clicked,India,Working Professional,Email Link Clicked
+CRM-008,GreenCart Foods,Meera Iyer,Business Development Lead,60,Food and Beverage,API,Direct Traffic,Yes,No,3,280,2.0,Email Bounced,India,Working Professional,Email Bounced

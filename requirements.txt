@@ -1,19 +1,39 @@
-streamlit
-python-dotenv
-pandas
-numpy
-scikit-learn
-xgboost
-langchain
-langchain-community
-langgraph
-chromadb
-faiss-cpu
-sentence-transformers
-ragas
-datasets
-tavily-python
-groq
-openai
-google-generativeai
-google-search-results
+# ---------------------------------------------------------------------------
+# BizPilot AI - requirements (Hugging Face Spaces / Render deployment)
+# Core packages are the ones actually imported by the running app.
+# Pinned to the versions validated in development for reproducibility.
+# ---------------------------------------------------------------------------
+
+# --- Core runtime (required) ---
+streamlit==1.58.0
+pandas==3.0.3
+numpy==2.5.1
+scikit-learn==1.9.0
+joblib==1.5.3
+chromadb==1.5.9
+sentence-transformers==5.6.0
+
+# sentence-transformers pulls these automatically; pinned to avoid resolver drift
+torch==2.12.1
+transformers==5.13.0
+tokenizers==0.22.2
+scipy==1.18.0
+
+# --- Optional / graceful-degradation (app runs without them) ---
+# LLM + agentic + evaluation extras. Uncomment on the deploy target if you
+# want live LLM answers, LangGraph orchestration, or RAGAS-style evaluation.
+# The app already degrades gracefully (extractive RAG, rule-based scoring,
+# local competitor corpus) when these are absent or no API key is set.
+# python-dotenv
+# openai
+# xgboost  # needed only for src/lead_scoring_model_comparison.py
+# langchain
+# langchain-community
+# langgraph
+# faiss-cpu
+# ragas
+# datasets
+# tavily-python
+# groq
+# google-generativeai
+# google-search-results

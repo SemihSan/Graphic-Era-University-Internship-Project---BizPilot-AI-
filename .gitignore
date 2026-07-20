@@ -6,6 +6,9 @@ __pycache__/
 *.pyc
 *.pkl
 *.joblib
+# Keep the trained lead-scoring model so the deployed app can load it
+# (raw training data is not committed, so it cannot be retrained on deploy).
+!models/lead_scoring_logreg.joblib
 *.sqlite3
 chroma_db/
 data/lead_scoring/raw/

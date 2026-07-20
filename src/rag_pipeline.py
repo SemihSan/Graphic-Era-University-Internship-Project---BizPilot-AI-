@@ -125,7 +125,7 @@ def build_chunks(documents: Iterable[dict[str, str]]) -> list[DocumentChunk]:
     chunks: list[DocumentChunk] = []
 
     for document in documents:
-        doc_chunks = chunk_text(document["text"])
+        doc_chunks = chunk_text(document["text"], overlap_chars=150)
         for index, chunk in enumerate(doc_chunks):
             chunk_id = f"{document['source_id']}::chunk_{index:03d}"
             chunks.append(
@@ -196,19 +196,33 @@ def build_index(reset: bool = True) -> int:
     return len(chunks)
 
 
-def retrieve(question: str, top_k: int = 5, max_distance: float = DEFAULT_MAX_DISTANCE) -> list[dict]:
+def retrieve(
+    question: str,
+    top_k: int = 5,
+    max_distance: float = DEFAULT_MAX_DISTANCE,
+    fetch_multiplier: int = 4,
+    lexical_weight: float = 0.25,
+) -> list[dict]:
+    """Retrieve context chunks with hybrid (vector + lexical) re-ranking.
+
+    Over-fetches ``top_k * fetch_multiplier`` candidates from ChromaDB, then
+    re-ranks them by combining normalized vector similarity with a lightweight
+    lexical-overlap signal. This improves context precision on keyword-heavy
+    business questions (pricing, plan names) without any extra model download.
+    """
     model = load_embedding_model()
     retrieval_query = build_retrieval_query(question)
     query_embedding = model.encode([retrieval_query], normalize_embeddings=True).tolist()[0]
     collection = get_chroma_collection(reset=False)
 
+    fetch_k = max(top_k, top_k * max(1, fetch_multiplier))
     result = collection.query(
         query_embeddings=[query_embedding],
-        n_results=top_k,
+        n_results=fetch_k,
         include=["documents", "metadatas", "distances"],
     )
 
-    rows: list[dict] = []
+    candidates: list[dict] = []
     ids = result.get("ids", [[]])[0]
     documents = result.get("documents", [[]])[0]
     metadatas = result.get("metadatas", [[]])[0]
@@ -218,16 +232,32 @@ def retrieve(question: str, top_k: int = 5, max_distance: float = DEFAULT_MAX_DI
         distance = float(distance)
         if distance > max_distance:
             continue
-        rows.append(
+        vector_similarity = 1.0 - (distance / 2.0)  # normalized embeddings -> distance in [0, 2]
+        lexical = _lexical_overlap(retrieval_query, document)
+        hybrid_score = (1.0 - lexical_weight) * vector_similarity + lexical_weight * lexical
+        candidates.append(
             {
                 "id": chunk_id,
                 "text": document,
                 "metadata": metadata,
                 "distance": distance,
+                "hybrid_score": round(hybrid_score, 4),
             }
         )
 
-    return rows
+    candidates.sort(key=lambda row: row["hybrid_score"], reverse=True)
+    return candidates[:top_k]
+
+
+def _lexical_overlap(query: str, text: str) -> float:
+    """Token-overlap ratio of query terms present in the chunk (0..1)."""
+    query_tokens = {tok for tok in normalize_question(query).split() if len(tok) > 2}
+    if not query_tokens:
+        return 0.0
+    text_tokens = set(normalize_question(text).split())
+    matched = query_tokens & text_tokens
+    return len(matched) / len(query_tokens)
+
 
 
 def build_retrieval_query(question: str) -> str:

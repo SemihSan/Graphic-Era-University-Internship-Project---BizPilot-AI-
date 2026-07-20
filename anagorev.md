@@ -1,5 +1,11 @@
 # BizPilot AI Main Task / BizPilot AI Ana Görev
-
+Hafta	Tarih	Görev	Teslim
+1. Hafta	06 Jul – 12 Jul 2026	Requirement study, tool setup, sample company documents hazırlama, Kaggle lead-scoring dataset bulma/hazırlama, RAG ve lead scoring için literatür taraması	Project proposal + dataset ready Due: Sun, 12 Jul
+2. Hafta	13 Jul – 19 Jul 2026	Core RAG pipeline kurma: document ingestion, chunking, embeddings, ChromaDB indexing, basic Q&A with citations	Working RAG prototype CLI/notebook Due: Sun, 19 Jul
+3. Hafta	20 Jul – 26 Jul 2026	Lead-scoring ML model eğitme, LLM ile entegre edip skorları doğal dille açıklatma, sample CRM-style dataset’e bağlama	Lead scoring module integrated Due: Sun, 26 Jul
+4. Hafta	27 Jul – 02 Aug 2026	Agentic outreach generator yapma, LangGraph/CrewAI kullanma, competitor-intelligence retriever ekleme, Tavily/SerpAPI ile rakip bilgisi çekme	Agentic modules functional Due: Sun, 02 Aug
+5. Hafta	03 Aug – 09 Aug 2026	Tüm modülleri tek Streamlit chatbot UI içinde birleştirme, RAGAS evaluation çalıştırma, hallucination ve edge case düzeltme	Fully integrated chatbot + eval report Due: Sun, 09 Aug
+6. Hafta	10 Aug – 16 Aug 2026	Hugging Face Spaces veya Render’a deploy etme, UI polish, README yazma, architecture diagram hazırlama, demo video kaydetme, final report/PPT hazırlama	Final submission: live demo + GitHub + report Due: Sun, 16 Aug
 ## English
 
 You are my AI research and development assistant for my internship project at Graphic Era University.

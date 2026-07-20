@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -9,11 +10,28 @@ import pandas as pd
 import streamlit as st
 
 from src.lead_scoring_predictor import score_lead
-from src.rag_pipeline import COMPANY_DOCS_DATASET, answer_question, build_index, get_chroma_collection
+from src.rag_pipeline import (
+    COMPANY_DOCS_DATASET,
+    DEFAULT_MAX_DISTANCE,
+    answer_question,
+    build_index,
+    generate_extractive_answer,
+    generate_llm_rag_answer,
+    get_chroma_collection,
+    retrieve,
+)
+from src.outreach_agent import generate_outreach
+from src.competitor_intel import run_competitor_intelligence
 
 
 ROOT_DIR = Path(__file__).resolve().parent
 MODEL_PATH = ROOT_DIR / "models" / "lead_scoring_logreg.joblib"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("bizpilot")
+
+# Guardrail for chat input length (defends against pathological / abusive input).
+MAX_CHAT_CHARS = 2000
 BASELINE_REPORT_PATH = ROOT_DIR / "reports" / "lead_scoring_baseline.md"
 PROCESSED_DATA_PATH = ROOT_DIR / "data" / "lead_scoring" / "processed" / "lead_scoring_cleaned.csv"
 CRM_SCORED_DATA_PATH = ROOT_DIR / "data" / "crm_sample_leads" / "scored_crm_leads.csv"
@@ -1189,11 +1207,11 @@ def render_rag_workspace(lang: str) -> None:
 
 def render_outreach_preview(lang: str) -> None:
     is_en = lang == "en"
-    st.markdown('<div class="bp-section-title">Outreach Draft Preview</div>', unsafe_allow_html=True)
+    st.markdown('<div class="bp-section-title">Agentic Outreach Generator</div>', unsafe_allow_html=True)
     st.caption(
-        "This is currently a template-based preview. Later, the LLM and retrieved context will generate agentic outreach."
+        "An agentic pipeline (qualify → research → draft → critique) grounds the message in the lead score and company documents, then an LLM refines it."
         if is_en
-        else "Bu şimdilik template tabanlı preview. İlerleyen adımda LLM ve retrieved context ile agentic outreach üretilecek."
+        else "Agentic bir hat (qualify → research → draft → critique) mesajı lead skoru ve şirket dokümanlarına dayandırır, sonra bir LLM taslağı iyileştirir."
     )
 
     company = st.text_input("Prospect Company", value="Northstar CRM Solutions")
@@ -1203,37 +1221,397 @@ def render_outreach_preview(lang: str) -> None:
         value="inbound lead response and sales team productivity" if is_en else "inbound lead response ve satış ekibi verimliliği",
     )
 
-    score = st.session_state.get("last_score", {}).get("final_score", 78)
-    raw_label = st.session_state.get("last_score", {}).get("label", "Yuksek Potansiyel")
-    label = display_label(raw_label, lang)
-
-    email = f"""Subject: Helping {company} prioritize inbound leads
-
-Hi {contact},
-
-I noticed that {company} may benefit from improving {pain_point}.
-BizPilot AI can help your team answer product questions from company documents, qualify inbound leads, and draft personalized outreach from one workspace.
-
-Based on the current qualification signals, this prospect is scored at {score}/100 ({label}).
-
-Would you be open to a short conversation this week?
-
-Best,
-BizPilot AI Team"""
-
-    linkedin = (
-        f"Hi {contact}, I am working on BizPilot AI for digital business development. "
-        f"It helps teams qualify leads, answer company-document questions, and draft outreach faster. "
-        f"Thought it could be relevant for {company}'s {pain_point} workflow."
+    col_opts1, col_opts2 = st.columns(2)
+    use_llm = col_opts1.checkbox(
+        "Use LLM (uncheck for offline template)" if is_en else "LLM kullan (kapatınca offline template)",
+        value=True,
     )
+    use_rag = col_opts2.checkbox(
+        "Use RAG research" if is_en else "RAG araştırması kullan",
+        value=True,
+    )
+
+    generate = st.button(
+        "Generate Outreach" if is_en else "Outreach Üret",
+        type="primary",
+        key="generate_outreach_btn",
+    )
+
+    if generate:
+        last_score = st.session_state.get("last_score", {})
+        lead_data = st.session_state.get("last_lead") or last_score.get("input_features") or {}
+        spinner_text = "Running agentic outreach pipeline..." if is_en else "Agentic outreach hattı çalışıyor..."
+        with st.spinner(spinner_text):
+            try:
+                result = generate_outreach(
+                    company=company,
+                    contact=contact,
+                    pain_point=pain_point,
+                    lead_data=lead_data,
+                    use_rag=use_rag,
+                    use_llm=use_llm,
+                )
+                st.session_state["last_outreach"] = result
+            except Exception as exc:
+                st.error(
+                    f"Outreach generation failed: {exc}" if is_en else f"Outreach üretimi başarısız: {exc}"
+                )
+
+    result = st.session_state.get("last_outreach")
+    if not result:
+        st.info(
+            "Fill in the prospect details and click Generate Outreach."
+            if is_en
+            else "Prospect bilgilerini doldur ve Outreach Üret butonuna bas."
+        )
+        return
+
+    steps = " → ".join(result.get("steps", []))
+    score = result.get("score")
+    label = display_label(result.get("label", ""), lang)
+    st.markdown(
+        f"**{'Pipeline' if is_en else 'Hat'}:** `{steps}` &nbsp;|&nbsp; "
+        f"**{'Orchestrator' if is_en else 'Orkestratör'}:** `{result.get('orchestrator', '')}` &nbsp;|&nbsp; "
+        f"**{'Lead score' if is_en else 'Lead skoru'}:** {score}/100 ({label})"
+    )
+    st.caption(
+        f"Draft: {result.get('draft_provider', '')} | Critique: {result.get('critique_provider', '')}"
+    )
+    if result.get("research_note"):
+        st.caption(result["research_note"])
+    for note in result.get("notes", []):
+        st.caption(f"ℹ️ {note}")
 
     c1, c2 = st.columns(2, gap="large")
     with c1:
         st.markdown("#### Cold Email")
-        st.code(email, language="text")
+        st.code(result.get("email", ""), language="text")
     with c2:
         st.markdown("#### LinkedIn Message")
-        st.code(linkedin, language="text")
+        st.code(result.get("linkedin", ""), language="text")
+
+    research = result.get("research", [])
+    if research:
+        with st.expander("Retrieved company context" if is_en else "Getirilen şirket bağlamı"):
+            for item in research:
+                st.markdown(f"**{item.get('title', 'context')}**")
+                st.caption(item.get("snippet", ""))
+
+
+def render_competitor_intelligence(lang: str) -> None:
+    is_en = lang == "en"
+    st.markdown('<div class="bp-section-title">Competitor Intelligence</div>', unsafe_allow_html=True)
+    st.caption(
+        "Retrieves public web information via Tavily or SerpAPI (with a local corpus fallback) and summarizes it with an LLM."
+        if is_en
+        else "Tavily veya SerpAPI ile public web bilgisini getirir (yoksa yerel korpusa düşer) ve bir LLM ile özetler."
+    )
+
+    query = st.text_input(
+        "Research Query" if is_en else "Araştırma Sorgusu",
+        value="AI lead scoring SaaS competitors",
+        key="competitor_query",
+    )
+    col1, col2 = st.columns(2)
+    max_results = col1.slider(
+        "Max results" if is_en else "Maksimum sonuç",
+        min_value=3,
+        max_value=10,
+        value=5,
+    )
+    use_llm = col2.checkbox(
+        "Summarize with LLM" if is_en else "LLM ile özetle",
+        value=True,
+        key="competitor_use_llm",
+    )
+
+    if st.button("Run Competitor Research" if is_en else "Rakip Araştırması Çalıştır", key="competitor_btn"):
+        spinner_text = "Retrieving and summarizing..." if is_en else "Getiriliyor ve özetleniyor..."
+        with st.spinner(spinner_text):
+            try:
+                st.session_state["last_competitor"] = run_competitor_intelligence(
+                    query, max_results=max_results, use_llm=use_llm
+                )
+            except Exception as exc:
+                st.error(
+                    f"Competitor research failed: {exc}" if is_en else f"Rakip araştırması başarısız: {exc}"
+                )
+
+    result = st.session_state.get("last_competitor")
+    if not result:
+        st.info(
+            "Enter a query and click Run Competitor Research."
+            if is_en
+            else "Bir sorgu gir ve Rakip Araştırması Çalıştır butonuna bas."
+        )
+        return
+
+    st.caption(
+        f"Provider: {result.get('retrieval_provider', '')} | {result.get('retrieval_note', '')}"
+    )
+    if result.get("summary"):
+        st.markdown("#### Summary" if is_en else "#### Özet")
+        st.write(result["summary"])
+        st.caption(f"Summary provider: {result.get('summary_provider', '')}")
+
+    results = result.get("results", [])
+    if results:
+        st.markdown("#### Sources" if is_en else "#### Kaynaklar")
+        for index, item in enumerate(results, start=1):
+            title = item.get("title", "result")
+            url = item.get("source_url") or item.get("url") or ""
+            st.markdown(f"**[{index}] {title}**")
+            snippet = item.get("snippet") or item.get("content") or ""
+            if snippet:
+                st.caption(snippet)
+            if url:
+                st.caption(url)
+
+
+CHAT_INTENT_KEYWORDS = {
+    "competitor": [
+        "competitor", "competitors", "rakip", "rakipler", "vs ", "versus", "compare",
+        "comparison", "market", "hubspot", "salesforce", "pipedrive", "alternative",
+    ],
+    "outreach": [
+        "outreach", "cold email", "email to", "linkedin", "mesaj yaz", "draft", "write an email",
+        "reach out", "e-posta", "eposta", "outreach yaz", "teklif", "proposal", "pitch",
+        "teklif ver", "teklif yaz", "teklif sun", "satış maili", "satis maili", "mail at",
+        "mail yaz", "iletişime geç", "iletisime gec",
+        "give an order", "give a order", "place an order", "order to", "make a deal",
+        "close a deal", "sell to", "want to sell", "pitch to", "do business with",
+        "get in touch", "sunum yap", "anlaşma", "anlasma", "iş yap", "is yap", "sat ",
+    ],
+    "lead": [
+        "lead score", "score this lead", "qualify", "skorla", "puanla", "lead skor",
+        "how good is this lead", "lead quality",
+    ],
+}
+
+
+def classify_chat_intent(text: str) -> str:
+    """Route a chat message to a module using scored keyword matching.
+
+    Counts keyword hits per intent and returns the highest-scoring one. Ties are
+    broken by priority (competitor > outreach > lead); if nothing matches, the
+    message falls back to document RAG Q&A.
+    """
+    lowered = f" {text.lower()} "
+    scores = {
+        intent: sum(1 for keyword in keywords if keyword in lowered)
+        for intent, keywords in CHAT_INTENT_KEYWORDS.items()
+    }
+    best_intent = max(
+        ("competitor", "outreach", "lead"),
+        key=lambda intent: scores[intent],
+    )
+    if scores[best_intent] > 0:
+        logger.debug("chat intent=%s scores=%s", best_intent, scores)
+        return best_intent
+    logger.debug("chat intent=rag scores=%s", scores)
+    return "rag"
+
+
+
+def _extract_outreach_company(text: str) -> str:
+    # 1) "for/to/için Acme" — hedef eylemden ÖNCE gelen büyük harfli ad.
+    match = re.search(r"(?:for|to|için|icin)\s+([A-ZÇĞİÖŞÜ][\w&.\- ]{2,40})", text)
+    if match:
+        return match.group(1).strip(" .")
+
+    # 2) "Acme için ..." — şirket adı "için/icin" edatından önce.
+    before = re.search(r"([A-ZÇĞİÖŞÜ][\w&.\-]{2,40})\s+(?:için|icin)\b", text)
+    if before:
+        return before.group(1).strip(" .")
+
+    stopwords = {
+        "için", "icin", "bir", "for", "to", "the", "and", "bu", "ve", "bize", "size",
+        "me", "us", "them", "you", "him", "her", "it", "someone", "them.",
+        "make", "give", "get", "do", "have", "take", "place", "close", "sell",
+        "want", "reach", "send", "write", "draft", "an", "a", "some", "any",
+    }
+
+    # 3) İngilizce "to/with <company>" (küçük harf de olabilir): "order to microsoft",
+    #    "make a deal with Salesforce". İlk stopword/fiil olmayan adayı seç.
+    for candidate in re.finditer(r"\b(?:to|with)\s+([A-Za-z][\w&.\-]{2,40})", text):
+        raw = candidate.group(1).strip(" .")
+        if raw.lower() not in stopwords:
+            return raw[:1].upper() + raw[1:]
+
+    # 4) Türkçe yönelme hâli: "Microsoft'a / microsofta bir teklif / mail / mesaj ...".
+    target_words = r"(?:teklif|mail|e-?posta|eposta|mesaj|ulaş|ulas|outreach)"
+    dative = re.search(
+        rf"([A-Za-zÇĞİÖŞÜçğıöşü][\w&.\-]{{1,40}}?)(['’`])?([ae])?\s+(?:bir\s+)?{target_words}",
+        text,
+    )
+    if dative:
+        raw = dative.group(1).strip(" .")
+        had_apostrophe = dative.group(2) is not None
+        if raw.lower() in stopwords:
+            return ""
+        # Kesme işareti YOKSA ("microsofta") sondaki yönelme ekini (a/e) temizle.
+        if not had_apostrophe and len(raw) > 4 and raw[-1].lower() in "ae" and raw[-2].lower() not in "aeıioöuü":
+            raw = raw[:-1]
+        return raw[:1].upper() + raw[1:]
+    return ""
+
+
+def answer_chat_rag(text: str) -> dict:
+    retrieved = retrieve(text, top_k=5, max_distance=DEFAULT_MAX_DISTANCE)
+    if not retrieved:
+        return {
+            "answer": (
+                "I could not find this in BizPilot AI's company documents, so I will not guess. "
+                "Try asking about pricing, plans, RAG architecture, lead scoring, outreach, "
+                "onboarding, support, security, or competitor intelligence."
+            ),
+            "citations": [],
+            "mode": "no_context",
+        }
+    llm = generate_llm_rag_answer(text, retrieved)
+    if llm["llm_used"]:
+        answer = str(llm["answer"])
+        mode = f"llm:{llm['provider']}"
+    else:
+        answer = generate_extractive_answer(text, retrieved)
+        mode = "extractive_fallback"
+    best_distance = min(row["distance"] for row in retrieved)
+    if best_distance > 1.2:
+        answer = (
+            "Note: this topic is only weakly covered by BizPilot AI's documents, so treat the "
+            "answer with caution.\n\n" + answer
+        )
+    citations = []
+    for index, row in enumerate(retrieved, start=1):
+        meta = row["metadata"]
+        citations.append(f"[{index}] {meta.get('title', meta.get('document_type', 'context'))} — {meta.get('source_url', '')}")
+    return {"answer": answer, "citations": citations, "mode": mode}
+
+
+def route_chat_message(text: str, lang: str) -> dict:
+    """Dispatch a chat message to the right module. Returns a render spec."""
+    is_en = lang == "en"
+    intent = classify_chat_intent(text)
+
+    if intent == "competitor":
+        result = run_competitor_intelligence(text, max_results=5, use_llm=True)
+        body = result.get("summary", "")
+        sources = [
+            f"[{i}] {r.get('title', 'result')} — {r.get('source_url') or r.get('url', '')}"
+            for i, r in enumerate(result.get("results", []), start=1)
+        ]
+        meta = f"Competitor Intelligence · {result.get('retrieval_provider', '')} · {result.get('summary_provider', '')}"
+        return {"intent": intent, "answer": body, "sources": sources, "meta": meta}
+
+    if intent == "outreach":
+        company = _extract_outreach_company(text) or "the prospect company"
+        last_lead = st.session_state.get("last_lead") or {}
+        result = generate_outreach(
+            company=company,
+            contact="there",
+            pain_point="",
+            lead_data=last_lead,
+            use_rag=True,
+            use_llm=True,
+        )
+        body = (
+            f"**Cold Email**\n\n{result.get('email', '')}\n\n---\n\n"
+            f"**LinkedIn**\n\n{result.get('linkedin', '')}"
+        )
+        meta = (
+            f"Outreach · {' → '.join(result.get('steps', []))} · "
+            f"score {result.get('score')}/100 · {result.get('draft_provider', '')}"
+        )
+        return {"intent": intent, "answer": body, "sources": [], "meta": meta}
+
+    if intent == "lead":
+        msg = (
+            "To score a lead I need its CRM fields. Open the **Lead Qualification** tab and "
+            "either paste a short lead description or fill the structured form. Once scored, "
+            "you can ask me here to draft outreach for it."
+            if is_en
+            else "Bir lead'i skorlamak için CRM alanları gerekli. **Lead Qualification** sekmesine geçip "
+            "kısa bir lead açıklaması yaz ya da formu doldur. Skorladıktan sonra buradan onun için "
+            "outreach üretmemi isteyebilirsin."
+        )
+        return {"intent": intent, "answer": msg, "sources": [], "meta": "Lead Qualification"}
+
+    rag = answer_chat_rag(text)
+    return {"intent": "rag", "answer": rag["answer"], "sources": rag["citations"], "meta": f"RAG Q&A · {rag['mode']}"}
+
+
+def render_chatbot(lang: str) -> None:
+    is_en = lang == "en"
+    st.markdown('<div class="bp-section-title">BizPilot AI Chatbot</div>', unsafe_allow_html=True)
+    st.caption(
+        "One chat that routes your message to the right module: company-document Q&A, "
+        "competitor intelligence, or outreach drafting. Lead scoring stays in its own tab."
+        if is_en
+        else "Mesajını doğru modüle yönlendiren tek sohbet: şirket-doküman Q&A, rakip analizi "
+        "veya outreach yazımı. Lead skorlama kendi sekmesinde kalır."
+    )
+
+    if "chat_history" not in st.session_state:
+        st.session_state["chat_history"] = []
+
+    if st.button("Clear chat" if is_en else "Sohbeti temizle", key="clear_chat"):
+        st.session_state["chat_history"] = []
+
+    for message in st.session_state["chat_history"]:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if message.get("meta"):
+                st.caption(message["meta"])
+            for source in message.get("sources", []):
+                st.caption(source)
+
+    placeholder = (
+        "Ask about pricing, a competitor, or say 'write an outreach email for Acme'"
+        if is_en
+        else "Fiyatı sor, bir rakibi sor ya da 'Acme için outreach emaili yaz' de"
+    )
+    prompt = st.chat_input(placeholder)
+    if not prompt:
+        return
+
+    prompt = prompt.strip()
+    if not prompt:
+        st.warning("Please type a question." if is_en else "Lütfen bir soru yaz.")
+        return
+    if len(prompt) > MAX_CHAT_CHARS:
+        st.warning(
+            f"Message is too long (max {MAX_CHAT_CHARS} characters). Please shorten it."
+            if is_en
+            else f"Mesaj çok uzun (en fazla {MAX_CHAT_CHARS} karakter). Lütfen kısalt."
+        )
+        return
+
+    st.session_state["chat_history"].append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        spinner_text = "Thinking..." if is_en else "Düşünüyor..."
+        with st.spinner(spinner_text):
+            try:
+                spec = route_chat_message(prompt, lang)
+            except Exception as exc:
+                logger.exception("chat routing failed")
+                spec = {"answer": f"Something went wrong: {exc}", "sources": [], "meta": "error"}
+        st.markdown(spec["answer"])
+        if spec.get("meta"):
+            st.caption(spec["meta"])
+        for source in spec.get("sources", []):
+            st.caption(source)
+
+    st.session_state["chat_history"].append(
+        {
+            "role": "assistant",
+            "content": spec["answer"],
+            "sources": spec.get("sources", []),
+            "meta": spec.get("meta", ""),
+        }
+    )
 
 
 def render_next_modules(lang: str) -> None:
@@ -1286,11 +1664,30 @@ def render_next_modules(lang: str) -> None:
     )
 
 
+@st.cache_resource(show_spinner=False)
+def ensure_rag_index() -> int:
+    """Build the ChromaDB index on first run if it is empty.
+
+    On fresh deployments (Hugging Face Spaces / Render) the ``chroma_db/``
+    folder is not committed, so the index is rebuilt once from the committed
+    company corpus. Cached so it runs only once per container.
+    """
+    try:
+        count = get_chroma_collection(reset=False).count()
+        if count == 0:
+            count = build_index(reset=True)
+        return count
+    except Exception:
+        return 0
+
+
 def main() -> None:
     inject_styles()
     lang = render_language_selector()
     is_en = lang == "en"
     render_header(lang)
+
+    ensure_rag_index()
 
     if not MODEL_PATH.exists():
         st.error(
@@ -1301,12 +1698,14 @@ def main() -> None:
         st.stop()
 
     tabs = (
-        ["Dashboard", "Lead Qualification", "RAG Q&A", "Outreach Preview", "Roadmap"]
+        ["Chatbot", "Dashboard", "Lead Qualification", "RAG Q&A", "Outreach Preview", "Competitor Intelligence", "Roadmap"]
         if is_en
-        else ["Dashboard", "Lead Qualification", "RAG Q&A", "Outreach Preview", "Yol Haritası"]
+        else ["Chatbot", "Dashboard", "Lead Qualification", "RAG Q&A", "Outreach Preview", "Rakip Analizi", "Yol Haritası"]
     )
-    dashboard_tab, lead_tab, docs_tab, outreach_tab, roadmap_tab = st.tabs(tabs)
+    chatbot_tab, dashboard_tab, lead_tab, docs_tab, outreach_tab, competitor_tab, roadmap_tab = st.tabs(tabs)
 
+    with chatbot_tab:
+        render_chatbot(lang)
     with dashboard_tab:
         render_dashboard(lang)
     with lead_tab:
@@ -1316,6 +1715,8 @@ def main() -> None:
         render_rag_workspace(lang)
     with outreach_tab:
         render_outreach_preview(lang)
+    with competitor_tab:
+        render_competitor_intelligence(lang)
     with roadmap_tab:
         render_next_modules(lang)
 

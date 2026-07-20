@@ -1,8 +1,42 @@
+---
+title: BizPilot AI
+emoji: 🤖
+colorFrom: blue
+colorTo: indigo
+sdk: streamlit
+sdk_version: 1.58.0
+app_file: app.py
+pinned: false
+---
+
 # BizPilot AI
 
 ## English
 
 BizPilot AI is an agentic RAG-powered chatbot for digital business development. The system is designed to answer questions from company documentation with citations, qualify inbound leads, draft personalized outreach messages, summarize public competitor information, and evaluate the RAG pipeline using faithfulness, context precision, and answer relevancy.
+
+### Quickstart
+
+```powershell
+# 1. Install dependencies
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+
+# 2. (First time) train the lead-scoring model and build the RAG index
+.venv\Scripts\python src\lead_scoring_baseline.py
+.venv\Scripts\python src\rag_pipeline.py build
+
+# 3. Run the app
+.venv\Scripts\streamlit run app.py   # http://localhost:8501
+
+# 4. (Optional) run tests and the RAG evaluation
+.venv\Scripts\python -m pytest -q
+.venv\Scripts\python src\rag_eval.py --top-k 5
+```
+
+Secrets are optional — the app degrades gracefully without them. To enable live LLM
+answers and web competitor search, copy `.env.example` to `.env` and fill in
+`OPENAI_API_KEY` / `TAVILY_API_KEY`. For deployment see `docs/week6_deployment_guide.md`.
 
 ### Professor-Given Scope
 
@@ -19,13 +53,17 @@ BizPilot AI is an agentic RAG-powered chatbot for digital business development. 
 
 ### Current MVP Direction
 
-The MVP uses Streamlit, ChromaDB, sentence-transformers, a synthetic company-documentation JSONL dataset, Logistic Regression lead scoring, and RAGAS-ready evaluation planning. The current implementation includes:
+The MVP uses Streamlit, ChromaDB, sentence-transformers, a synthetic company-documentation JSONL dataset, Logistic Regression lead scoring, and RAGAS-style evaluation. The current implementation includes:
 
-- Streamlit UI
-- Lead-scoring baseline model and prediction wrapper
-- Week 2 RAG CLI prototype
+- Streamlit UI with 7 tabs: Chatbot, Dashboard, Lead Qualification, RAG Q&A, Outreach Preview, Competitor Intelligence, Roadmap
+- Unified intent-routing chatbot (RAG / outreach / competitor / lead) with citations
+- Lead-scoring baseline model, single + batch prediction, and optional LLM explanation
+- RAG pipeline (retrieval + LLM generation) with extractive fallback
+- Agentic outreach generator (LangGraph-optional: qualify → research → draft → critique)
+- Competitor intelligence retriever (Tavily → SerpAPI → local corpus fallback)
+- RAG evaluation (faithfulness, context precision, answer relevancy) + guardrail checks
 - Large synthetic BizPilot company-documentation corpus
-- Week 1 and Week 2 documentation
+- Deployment config for Hugging Face Spaces and Render (see `docs/week6_deployment_guide.md`)
 
 ### RAG Dataset
 
@@ -74,23 +112,33 @@ They are not used by the active RAG pipeline.
 
 ```mermaid
 flowchart LR
-    U[User in Streamlit UI] --> R[LangGraph Router]
-    R --> Q[RAG Q&A Chain]
-    R --> L[Lead Qualification Module]
-    R --> O[Outreach Generator]
-    R --> C[Competitor Intelligence Retriever]
-    D[Synthetic Company Documentation JSONL] --> I[Document Loader + Chunker]
-    I --> E[Embeddings]
-    E --> V[ChromaDB or FAISS]
+    U[User in Streamlit UI] --> CB[Chatbot Intent Router]
+    CB --> Q[RAG Q&A Chain]
+    CB --> L[Lead Qualification Module]
+    CB --> O[Outreach Agent]
+    CB --> C[Competitor Intelligence Retriever]
+
+    D[Synthetic Company Docs JSONL] --> I[Loader + Chunker]
+    I --> E[all-MiniLM-L6-v2 Embeddings]
+    E --> V[(ChromaDB)]
     V --> Q
-    K[Kaggle Lead Dataset] --> M[Logistic Regression or XGBoost]
+    Q --> G[LLM Answer with Citations]
+    G -.extractive fallback.-> Q
+
+    K[Kaggle Lead Dataset] --> M[Logistic Regression]
     M --> L
-    W[Tavily or SerpAPI] --> C
-    Q --> G[LLM Response with Citations]
-    L --> X[Score + Natural Language Explanation]
-    O --> Y[Cold Email + LinkedIn Draft]
+    L --> X[Score + NL Explanation]
+
+    O --> OA[qualify -> research -> draft -> critique]
+    OA --> Y[Cold Email + LinkedIn Draft]
+
+    W[Tavily / SerpAPI / Local] --> C
     C --> Z[Public Competitor Summary]
+
+    Q --> EV[RAG Eval: faithfulness / precision / relevancy + guardrails]
 ```
+
+The app runs with graceful degradation: without an LLM key it uses extractive RAG and rule-based scoring; without a web-search key competitor intelligence uses the local corpus.
 
 ### Repository Structure
 
@@ -173,6 +221,16 @@ The CRM sample input is:
 data/crm_sample_leads/crm_leads_sample.csv
 ```
 
+Compare Logistic Regression against Random Forest and XGBoost on the same split:
+
+```powershell
+.venv\Scripts\python src\lead_scoring_model_comparison.py
+```
+
+The comparison report is written to `reports/lead_scoring_model_comparison.md`. On the
+held-out split XGBoost reaches the best ROC-AUC (~0.886) versus Logistic Regression
+(~0.870); the app ships Logistic Regression for its interpretable, coefficient-based reasons.
+
 The batch output is:
 
 ```text
@@ -182,6 +240,38 @@ data/crm_sample_leads/scored_crm_leads.csv
 Optional LLM explanation mode uses the normal OpenAI API. Configure `OPENAI_API_KEY` and keep `OPENAI_MODEL=gpt-5.4` in `.env`.
 
 In the Streamlit Lead Qualification tab, users can score a lead through a standalone natural-language prompt without filling the structured form. The structured CRM form remains available as a separate manual input mode.
+
+### Run The Week 4 Agentic Modules
+
+Generate an outreach draft (qualify → research → draft → critique):
+
+```powershell
+.venv\Scripts\python src\outreach_agent.py
+```
+
+Run competitor intelligence (Tavily → SerpAPI → local fallback):
+
+```powershell
+.venv\Scripts\python src\competitor_intel.py "HubSpot CRM pricing"
+```
+
+### Run The Week 5 RAG Evaluation
+
+```powershell
+.venv\Scripts\python src\rag_eval.py --top-k 5
+```
+
+Retrieval-only mode (no LLM judge):
+
+```powershell
+.venv\Scripts\python src\rag_eval.py --top-k 5 --no-llm
+```
+
+The report is written to `reports/week5_rag_evaluation.md`.
+
+### Week 6 Deployment
+
+See `docs/week6_deployment_guide.md` for step-by-step Hugging Face Spaces (Streamlit SDK) and Render (Docker) instructions, secrets configuration, and the post-deploy checklist. The `chroma_db/` index is rebuilt automatically on first launch, and the trained model is force-kept in git so the deployed app can load it without retraining.
 
 ### Current RAG Status
 
